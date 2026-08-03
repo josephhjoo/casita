@@ -17,6 +17,10 @@ Votes and pass reasons are stored in SQLite. During ranking, Casita builds:
 static ranking policy. It proposes contradictions and new rules, but it never
 edits code. A human decides whether a proposed rule belongs in the prompt.
 
+`casita rank-diff` supports this loop from the measurement side: it shows
+where revealed preference and the current policy disagree, so proposed rules
+can be checked against real disagreements before they become prompt changes.
+
 ## Ways This Could Go Further
 
 The loop could gain better fixtures, better diff output, or clearer aging of
