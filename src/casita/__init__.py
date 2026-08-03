@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import craigslist, dedup, html, llm, redfin, storage, walk, zillow, zumper
+from . import craigslist, dedup, html, llm, rankdiff, redfin, storage, walk, zillow, zumper
 from .browser import context
 from .models import Listing
 from .rank import rank, score
@@ -666,6 +666,122 @@ def show():
     if run:
         console.print(f"last run #{run['id']} at {run['finished_at']}")
     _print_table(listings, walk_map=walk_map, limit=60)
+
+
+def _print_rank_diff_disagreements(universe: list[Listing], walk_map: dict | None, top: int) -> None:
+    from . import listing_page
+    rows = rankdiff.top_disagreements(universe, walk_map, top)
+    table = Table(title=f"top {len(rows)} disagreements — deterministic vs LLM (by |delta|)")
+    for col in ["listing", "heuristic #", "llm #", "delta", "llm reason"]:
+        table.add_column(col)
+    for d in rows:
+        table.add_row(
+            listing_page._slug(d.listing),
+            str(d.heuristic_pos),
+            str(d.llm_pos),
+            f"{d.delta:+d}",
+            (d.listing.llm_reason or "")[:70],
+        )
+    console.print(table)
+
+
+def _print_rank_diff_agreement(
+    universe: list[Listing], status_map: dict[str, str], vote_scores: dict[str, int], walk_map: dict | None
+) -> None:
+    from . import listing_page
+    rows = rankdiff.labeled_rows(universe, status_map, vote_scores, walk_map)
+    summary = rankdiff.summarize_agreement(rows)
+    voted = rankdiff.voted_listing_count(universe, vote_scores)
+    console.print()
+    console.print(
+        f"[bold]labels:[/bold] {summary.positive_count} positive, {summary.negative_count} negative "
+        f"({voted} of the comparison universe carry a nonzero net vote)"
+    )
+    table = Table(title="human decisions vs. rankers (directional, not statistical)")
+    for col in ["listing", "label", "net vote", "heuristic half", "llm half"]:
+        table.add_column(col)
+    for r in rows:
+        table.add_row(
+            listing_page._slug(r.listing),
+            r.label,
+            f"{r.net_vote:+d}",
+            f"{r.heuristic_half}{' ✓' if r.heuristic_agrees else ''}",
+            f"{r.llm_half}{' ✓' if r.llm_agrees else ''}",
+        )
+    console.print(table)
+    console.print(
+        f"[bold]agreement (directional):[/bold] heuristic {summary.heuristic_agree_count}/{summary.total_labeled}, "
+        f"llm {summary.llm_agree_count}/{summary.total_labeled}"
+    )
+    console.print(
+        "[dim]LLM agreement is in-sample — votes are fed to the ranker as few-shot examples on every "
+        "enrich. Heuristic agreement is out-of-sample. The two counts are not head-to-head comparable.[/dim]"
+    )
+
+
+def _print_rank_diff_contradictions(
+    universe: list[Listing], vote_scores: dict[str, int], walk_map: dict | None
+) -> None:
+    from . import listing_page
+    contradictions = rankdiff.llm_vote_contradictions(universe, vote_scores, walk_map)
+    console.print()
+    if not contradictions:
+        console.print("[bold]LLM contradicts a known vote:[/bold] none")
+        return
+    console.print(
+        f"[bold red]LLM contradicts a known vote[/bold red] ({len(contradictions)}) "
+        "— the strongest signal in this report, since the LLM was shown these exact votes:"
+    )
+    for c in contradictions:
+        direction = "upvoted but ranked in the bottom half" if c.net_vote > 0 else "downvoted but ranked in the top half"
+        console.print(f"  • {listing_page._slug(c.listing)} — {direction} (net vote {c.net_vote:+d})")
+
+
+@cli.command(name="rank-diff")
+@click.option("--top", default=10, show_default=True, help="Number of top disagreements to show.")
+@click.option("--local", is_flag=True, help="Skip GCS sync; operate on the local DB only.")
+def rank_diff(top: int, local: bool):
+    """Compare the deterministic scorer against the LLM ranker.
+
+    Two independent opinions on each listing: rank.score() (deterministic —
+    dog policy, neighborhoods, beds/baths, laundry, parking, walk bonuses)
+    and llm_rank (Gemini, persisted by `casita enrich`). Ignores votes and
+    funnel status for ordering — rank() already blends those in; this report
+    isolates scoring policy so it can be checked against recorded human
+    decisions instead.
+
+    Credentials-free against the demo fixture:
+
+      CASITA_DB_PATH=fixtures/demo.sqlite CASITA_ROUTE_CACHE_DB=fixtures/demo.sqlite \\
+        CASITA_ROUTES_OFFLINE=1 uv run casita rank-diff --local
+    """
+    with _cloud_or_local(local, read_only=True):
+        with storage.connect() as conn:
+            status_map = {r[0]: r[1] for r in conn.execute("SELECT listing_key, status FROM listing_status")}
+            vote_scores = _vote_scores(conn)
+            active = storage.active_listings(conn)
+            universe, filtered_count = rankdiff.comparison_universe(active)
+
+            # Cache/haversine-only — mirrors show()'s guard. This is a
+            # read-only report and must not gain the ability to spend Maps
+            # API money.
+            previous_offline = os.environ.get("CASITA_ROUTES_OFFLINE")
+            try:
+                os.environ["CASITA_ROUTES_OFFLINE"] = "1"
+                walk_map = walk.populate_for(universe)
+            finally:
+                if previous_offline is None:
+                    os.environ.pop("CASITA_ROUTES_OFFLINE", None)
+                else:
+                    os.environ["CASITA_ROUTES_OFFLINE"] = previous_offline
+
+    console.print(
+        f"[bold]comparison universe:[/bold] {len(universe)} active listings with a real llm_rank "
+        f"({filtered_count} filtered by LLM — not compared)"
+    )
+    _print_rank_diff_disagreements(universe, walk_map, top)
+    _print_rank_diff_agreement(universe, status_map, vote_scores, walk_map)
+    _print_rank_diff_contradictions(universe, vote_scores, walk_map)
 
 
 @cli.command()
