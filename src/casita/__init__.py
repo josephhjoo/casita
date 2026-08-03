@@ -90,16 +90,17 @@ async def _scrape(
     listings = dedup.dedupe(listings)
     if before != len(listings):
         console.print(f"[bold]dedup:[/bold] {before} → {len(listings)} listings")
+    # No walk_map here — this table is a zero-Maps-cost search preview; `enrich` populates it for the persisted rank.
     return rank(listings), succeeded
 
 
-def _print_table(listings: list[Listing], limit: int = 25):
+def _print_table(listings: list[Listing], walk_map: dict | None = None, limit: int = 25):
     table = Table(title=f"top {min(limit, len(listings))} of {len(listings)}")
     for col in ["score", "source", "hood", "beds", "ba", "price", "parking", "title"]:
         table.add_column(col)
     for L in listings[:limit]:
         table.add_row(
-            str(score(L)),
+            str(score(L, walk_map)),
             L.source,
             (L.neighborhood or "?")[:16],
             str(L.beds or "?"),
@@ -643,12 +644,28 @@ def show():
     """Show current active listings from the DB."""
     with storage.connect() as conn:
         status_map = {r[0]: r[1] for r in conn.execute("SELECT listing_key, status FROM listing_status")}
-        listings = rank(storage.active_listings(conn), status_map=status_map,
+        active = storage.active_listings(conn)
+
+        # Force the cache/haversine-only route path — `show` is a read-only
+        # inspection command and must not gain the ability to spend Maps API
+        # money it never had before this walk_map wiring (mirrors demo()'s
+        # env save/restore).
+        previous_offline = os.environ.get("CASITA_ROUTES_OFFLINE")
+        try:
+            os.environ["CASITA_ROUTES_OFFLINE"] = "1"
+            walk_map = walk.populate_for(active)
+        finally:
+            if previous_offline is None:
+                os.environ.pop("CASITA_ROUTES_OFFLINE", None)
+            else:
+                os.environ["CASITA_ROUTES_OFFLINE"] = previous_offline
+
+        listings = rank(active, walk_map=walk_map, status_map=status_map,
                         vote_scores=_vote_scores(conn))
         run = storage.latest_run(conn)
     if run:
         console.print(f"last run #{run['id']} at {run['finished_at']}")
-    _print_table(listings, limit=60)
+    _print_table(listings, walk_map=walk_map, limit=60)
 
 
 @cli.command()
@@ -1057,10 +1074,11 @@ def _render_site(filename: str, output_dir: Path) -> dict[str, int | Path]:
             console.print(f"[bold]dedup:[/bold] deactivated {deactivated} duplicate listings")
         status_rows = conn.execute("SELECT listing_key, status FROM listing_status").fetchall()
         status_map = {r[0]: r[1] for r in status_rows}
-        listings = rank(storage.active_listings(conn), status_map=status_map,
+        active = storage.active_listings(conn)
+        walk_map = walk.populate_for(active)
+        listings = rank(active, walk_map=walk_map, status_map=status_map,
                         vote_scores=_vote_scores(conn))
         run = storage.latest_run(conn)
-        walk_map = walk.populate_for(listings)
         drive_map = walk.populate_drive_for_marin(listings)
         drive_bakery_map = walk.populate_drive_for_bakeries(listings)
         convo_map = {

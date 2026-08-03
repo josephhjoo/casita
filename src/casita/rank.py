@@ -60,10 +60,13 @@ def score(listing: Listing, walk_map: dict | None = None) -> int:
     elif listing.dog_policy == "dogs_ok":
         s += 6
 
-    # Walk times — Presidio is primary.
-    if walk_map is not None:
+    # Walk times — Presidio is primary. Skipped for Marin listings: walking
+    # to SF anchors is the wrong travel mode there (see walk.is_marin /
+    # populate_drive_for_marin), so the branch must not fire regardless of
+    # whether walk_map was supplied.
+    from .walk import BEACHES, PRESIDIO_GATES, is_marin, nearest
+    if walk_map is not None and not is_marin(listing):
         # Use minimum of presidio gates / beaches as the listing's value.
-        from .walk import BEACHES, PRESIDIO_GATES, nearest
         np = nearest(walk_map, listing.key, PRESIDIO_GATES)
         nb = nearest(walk_map, listing.key, BEACHES)
         if np:
