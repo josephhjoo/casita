@@ -18,7 +18,9 @@ from .models import Listing
 
 def _hood_fallback_bonus(listing: Listing) -> int:
     """Small extra credit for target SF neighborhoods."""
-    hood = (listing.hood or "").lower()
+    # Scrapers store slugs ("inner-richmond") when neighborhood_resolved isn't
+    # set yet; the table below is space-separated, so normalize hyphens too.
+    hood = (listing.hood or "").lower().replace("-", " ")
     if any(h in hood for h in ["inner richmond", "lake street", "presidio heights"]):
         return 6
     if "inner sunset" in hood:

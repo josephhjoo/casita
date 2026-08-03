@@ -1,5 +1,5 @@
 from casita.models import Listing
-from casita.rank import rank, score
+from casita.rank import _hood_fallback_bonus, rank, score
 from casita.walk import BEACHES, PRESIDIO_GATES
 
 
@@ -62,3 +62,28 @@ def test_score_marin_listing_unchanged_with_walk_map():
     }
 
     assert score(listing, None) == score(listing, walk_map)
+
+
+def test_hood_fallback_bonus_matches_slug_and_human_format():
+    slug = Listing(source="manual", source_id="slug", url="", neighborhood="inner-richmond")
+    human = Listing(source="manual", source_id="human", url="", neighborhood="Inner Richmond")
+
+    assert _hood_fallback_bonus(slug) == _hood_fallback_bonus(human) == 6
+
+
+def test_hood_fallback_bonus_prefers_resolved_name_over_raw_neighborhood():
+    listing = Listing(
+        source="manual",
+        source_id="resolved",
+        url="",
+        neighborhood="outer-sunset",  # raw slug would score 1 if it won
+        neighborhood_resolved="Presidio Heights",  # resolved must still take priority
+    )
+
+    assert _hood_fallback_bonus(listing) == 6
+
+
+def test_hood_fallback_bonus_returns_zero_for_untracked_neighborhood():
+    listing = Listing(source="manual", source_id="untracked", url="", neighborhood="hayes-valley")
+
+    assert _hood_fallback_bonus(listing) == 0
