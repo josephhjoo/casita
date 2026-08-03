@@ -12,6 +12,7 @@ decisions on purpose, which is right for the site but wrong for this report.
 Isolating scoring policy from that funnel is what lets both rankers be
 checked against recorded human decisions independently.
 """
+import json
 from dataclasses import dataclass
 
 from .models import Listing
@@ -197,3 +198,84 @@ def llm_vote_contradictions(
         if (net > 0 and l_half == "bottom") or (net < 0 and l_half == "top"):
             out.append(VoteContradiction(L, net, l_half))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Baselines — snapshot the current llm_rank ordering to diff against later.
+#
+# LLM rankings move for two reasons: the ranking prompt changes, or votes
+# drift the few-shot examples on every enrich even with no prompt edit.
+# Baselines are DB-only — no LLM calls, no imports from llm.py — so taking
+# or comparing a snapshot never costs anything.
+# ---------------------------------------------------------------------------
+
+
+class BaselineError(Exception):
+    """A baseline file is missing, unreadable, or not a valid snapshot."""
+
+
+def serialize_baseline(universe: list[Listing], *, timestamp: str) -> str:
+    """JSON snapshot of the current comparison universe's llm_rank values."""
+    ranks = {L.key: L.llm_rank for L in universe}
+    payload = {"meta": {"timestamp": timestamp, "count": len(ranks)}, "ranks": ranks}
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def deserialize_baseline(text: str) -> dict[str, int]:
+    """Parse a saved snapshot back into {listing_key: llm_rank}."""
+    try:
+        ranks = json.loads(text)["ranks"]
+        return {str(key): int(rank) for key, rank in ranks.items()}
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        raise BaselineError(f"not a valid rank-diff baseline: {e}") from e
+
+
+def positions_from_ranks(ranks: dict[str, int]) -> dict[str, int]:
+    """1-based position of each key within its own snapshot, sorted by rank ascending."""
+    ordered = sorted(ranks.items(), key=lambda kv: kv[1])
+    return {key: i + 1 for i, (key, _) in enumerate(ordered)}
+
+
+@dataclass(frozen=True)
+class Movement:
+    listing: Listing
+    old_pos: int
+    new_pos: int
+
+    @property
+    def delta(self) -> int:
+        # Positive = moved toward #1 (improved) since the baseline was saved.
+        return self.old_pos - self.new_pos
+
+
+@dataclass(frozen=True)
+class MovementReport:
+    movements: list[Movement]  # top-N by |delta|
+    common_count: int
+    only_old_count: int   # in the baseline but gone from the current universe
+    only_new_count: int   # in the current universe but not the baseline
+
+
+def compute_movement(universe: list[Listing], baseline_ranks: dict[str, int], top: int) -> MovementReport:
+    """Compare current llm_rank positions against a prior baseline snapshot.
+
+    Positions are recomputed within each snapshot's own universe — never raw
+    llm_rank deltas — since the two universes can differ in size (listings
+    go inactive, get newly ranked, or get filtered between snapshots).
+    """
+    new_ranks = {L.key: L.llm_rank for L in universe}
+    old_pos = positions_from_ranks(baseline_ranks)
+    new_pos = positions_from_ranks(new_ranks)
+
+    common_keys = set(baseline_ranks) & set(new_ranks)
+    by_key = {L.key: L for L in universe}
+    movements = sorted(
+        (Movement(by_key[key], old_pos[key], new_pos[key]) for key in common_keys),
+        key=lambda m: -abs(m.delta),
+    )
+    return MovementReport(
+        movements=movements[:top],
+        common_count=len(common_keys),
+        only_old_count=len(baseline_ranks) - len(common_keys),
+        only_new_count=len(new_ranks) - len(common_keys),
+    )

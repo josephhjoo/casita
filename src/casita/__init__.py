@@ -737,10 +737,45 @@ def _print_rank_diff_contradictions(
         console.print(f"  • {listing_page._slug(c.listing)} — {direction} (net vote {c.net_vote:+d})")
 
 
+def _print_rank_diff_movement(universe: list[Listing], baseline_ranks: dict[str, int], top: int) -> None:
+    from . import listing_page
+    report = rankdiff.compute_movement(universe, baseline_ranks, top)
+    console.print()
+    console.print(
+        f"[bold]baseline movement:[/bold] {report.common_count} listings in both snapshots "
+        f"({report.only_old_count} only in the baseline — gone/filtered since; "
+        f"{report.only_new_count} only in the current run — newly ranked)"
+    )
+    table = Table(title=f"top {len(report.movements)} movements vs. baseline (by |delta|)")
+    for col in ["listing", "old #", "new #", "delta"]:
+        table.add_column(col)
+    for m in report.movements:
+        table.add_row(
+            listing_page._slug(m.listing),
+            str(m.old_pos),
+            str(m.new_pos),
+            f"{m.delta:+d}",
+        )
+    console.print(table)
+
+
 @cli.command(name="rank-diff")
 @click.option("--top", default=10, show_default=True, help="Number of top disagreements to show.")
 @click.option("--local", is_flag=True, help="Skip GCS sync; operate on the local DB only.")
-def rank_diff(top: int, local: bool):
+@click.option(
+    "--save-baseline",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a JSON snapshot of the current llm_rank ordering to FILE.",
+)
+@click.option(
+    "--baseline",
+    "baseline_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Compare the current llm_rank ordering against a prior --save-baseline snapshot.",
+)
+def rank_diff(top: int, local: bool, save_baseline: Path | None, baseline_file: Path | None):
     """Compare the deterministic scorer against the LLM ranker.
 
     Two independent opinions on each listing: rank.score() (deterministic —
@@ -749,6 +784,10 @@ def rank_diff(top: int, local: bool):
     funnel status for ordering — rank() already blends those in; this report
     isolates scoring policy so it can be checked against recorded human
     decisions instead.
+
+    --baseline and --save-baseline may be combined: the movement report
+    compares against the old file first, then the file is overwritten with
+    the current snapshot.
 
     Credentials-free against the demo fixture:
 
@@ -782,6 +821,20 @@ def rank_diff(top: int, local: bool):
     _print_rank_diff_disagreements(universe, walk_map, top)
     _print_rank_diff_agreement(universe, status_map, vote_scores, walk_map)
     _print_rank_diff_contradictions(universe, vote_scores, walk_map)
+
+    if baseline_file is not None:
+        try:
+            baseline_ranks = rankdiff.deserialize_baseline(baseline_file.read_text())
+        except rankdiff.BaselineError as e:
+            console.print(f"[red]--baseline {baseline_file}: {e}[/red]")
+            raise SystemExit(1)
+        _print_rank_diff_movement(universe, baseline_ranks, top)
+
+    if save_baseline is not None:
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
+        save_baseline.write_text(rankdiff.serialize_baseline(universe, timestamp=timestamp))
+        console.print(f"\n[green]baseline saved:[/green] {save_baseline} ({len(universe)} listings)")
 
 
 @cli.command()
