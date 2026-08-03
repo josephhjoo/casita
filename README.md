@@ -11,6 +11,13 @@ This is not a product or service. It is published as-is, under MIT, as a
 personal-use codebase for an interview loop. The interesting part is what a
 candidate chooses to improve.
 
+## What I changed and why (interview submission)
+
+This fork adds `casita rank-diff`, a report that makes the deterministic and
+LLM rankers' behavior visible, plus two fixes in the deterministic ranking
+path that building it surfaced. The full explanation is in
+[WRITEUP.md](WRITEUP.md).
+
 ## Demo
 
 The demo is credentials-free and uses a sanitized SQLite fixture with cached
