@@ -89,17 +89,18 @@ def top_disagreements(listings: list[Listing], walk_map: dict | None, top: int) 
 def human_label(status: str | None, net_vote: int) -> str | None:
     """'positive' / 'negative' / None (unlabeled, or landlord-declined and excluded).
 
-    positive = net-upvoted OR an active-pipeline status; negative = passed on
-    or declined by us; declined_by_landlord is excluded outright — that's the
-    landlord's preference, not the user's, so it isn't a label on either
-    ranker.
+    negative = passed on or declined by us — takes precedence over a positive
+    net vote, matching rank()'s documented "eliminated wins" semantics;
+    positive = net-upvoted OR an active-pipeline status; declined_by_landlord
+    is excluded outright — that's the landlord's preference, not the user's,
+    so it isn't a label on either ranker.
     """
     if status in EXCLUDED_STATUSES:
         return None
-    if net_vote > 0 or status in POSITIVE_STATUSES:
-        return "positive"
     if status in NEGATIVE_STATUSES:
         return "negative"
+    if net_vote > 0 or status in POSITIVE_STATUSES:
+        return "positive"
     return None
 
 
@@ -226,7 +227,7 @@ def deserialize_baseline(text: str) -> dict[str, int]:
     try:
         ranks = json.loads(text)["ranks"]
         return {str(key): int(rank) for key, rank in ranks.items()}
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError) as e:
         raise BaselineError(f"not a valid rank-diff baseline: {e}") from e
 
 
@@ -270,7 +271,7 @@ def compute_movement(universe: list[Listing], baseline_ranks: dict[str, int], to
     common_keys = set(baseline_ranks) & set(new_ranks)
     by_key = {L.key: L for L in universe}
     movements = sorted(
-        (Movement(by_key[key], old_pos[key], new_pos[key]) for key in common_keys),
+        (Movement(by_key[key], old_pos[key], new_pos[key]) for key in sorted(common_keys)),
         key=lambda m: -abs(m.delta),
     )
     return MovementReport(

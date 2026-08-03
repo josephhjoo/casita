@@ -824,15 +824,17 @@ def rank_diff(top: int, local: bool, save_baseline: Path | None, baseline_file: 
 
     if baseline_file is not None:
         try:
-            baseline_ranks = rankdiff.deserialize_baseline(baseline_file.read_text())
-        except rankdiff.BaselineError as e:
+            text = baseline_file.read_text()
+            baseline_ranks = rankdiff.deserialize_baseline(text)
+        except (rankdiff.BaselineError, OSError, UnicodeDecodeError) as e:
             console.print(f"[red]--baseline {baseline_file}: {e}[/red]")
-            raise SystemExit(1)
+            raise SystemExit(1) from None
         _print_rank_diff_movement(universe, baseline_ranks, top)
 
     if save_baseline is not None:
         from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc).isoformat()
+        save_baseline.parent.mkdir(parents=True, exist_ok=True)
         save_baseline.write_text(rankdiff.serialize_baseline(universe, timestamp=timestamp))
         console.print(f"\n[green]baseline saved:[/green] {save_baseline} ({len(universe)} listings)")
 

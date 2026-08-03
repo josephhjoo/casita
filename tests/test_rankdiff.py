@@ -116,3 +116,32 @@ def test_compute_movement_reports_moved_gone_and_new_listings():
 def test_deserialize_baseline_raises_baseline_error_for_corrupt_input():
     with pytest.raises(rankdiff.BaselineError):
         rankdiff.deserialize_baseline("not json")
+
+
+@pytest.mark.parametrize("text", [
+    '{"ranks": [1, 2]}',       # ranks is a list, not a dict -> AttributeError
+    '{"ranks": {"a": null}}',  # rank value isn't an int -> TypeError
+    '{"ranks": {"a": "x"}}',   # rank value isn't numeric -> ValueError
+    '{"no_ranks_key": {}}',    # missing "ranks" key -> KeyError
+])
+def test_deserialize_baseline_raises_baseline_error_for_wrong_shaped_json(text):
+    with pytest.raises(rankdiff.BaselineError):
+        rankdiff.deserialize_baseline(text)
+
+
+# --- llm_vote_contradictions ----------------------------------------------------
+
+
+def test_llm_vote_contradictions_flags_upvoted_listing_in_bottom_half():
+    upvoted = _listing("upvoted", llm_rank=4)  # worst LLM rank -> bottom half despite the upvote
+    a = _listing("a", llm_rank=1)
+    b = _listing("b", llm_rank=2)
+    c = _listing("c", llm_rank=3)
+    vote_scores = {upvoted.key: 1}
+
+    contradictions = rankdiff.llm_vote_contradictions([upvoted, a, b, c], vote_scores, walk_map=None)
+
+    assert len(contradictions) == 1
+    assert contradictions[0].listing.key == upvoted.key
+    assert contradictions[0].net_vote == 1
+    assert contradictions[0].llm_half == "bottom"
